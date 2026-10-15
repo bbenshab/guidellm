@@ -43,6 +43,19 @@ class OpenAIHTTPBackendArgs(BackendArgs):
         description="Huggingface model identifier or local path to a model",
         examples=["gpt-4o", "Qwen/Qwen3-0.6B"],
     )
+    lora_adapters: list[str] | None = Field(
+        default=None,
+        description=(
+            "LoRA adapter names to round-robin requests across. "
+            "The base model (from `model`) is included in the cycle: "
+            "requests are distributed across [model, adapter1, adapter2, ...]. "
+            "Assignment happens at request-generation time in the scheduler's "
+            "main process (before worker dispatch), so it is immune to "
+            "multiprocessing isolation. The `model` field is always used "
+            "for tokenizer resolution and benchmark identity."
+        ),
+        examples=[["agent-01", "agent-02", "agent-03"]],
+    )
     request_format: Literal[
         "/v1/completions",
         "/v1/chat/completions",

@@ -408,6 +408,94 @@ class TestOpenAIHTTPBackend:
 
     @pytest.mark.regression
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "request_model,expected_model",
+        [
+            ("lora-adapter-01", "lora-adapter-01"),
+            (None, "default-model"),
+        ],
+        ids=["override", "default_fallback"],
+    )
+    @async_timeout(10.0)
+    async def test_resolve_model_override(
+        self,
+        httpx_mock: HTTPXMock,
+        mock_request_handler,
+        request_model,
+        expected_model,
+    ):
+        """Backend uses request.model when set, falls back to default."""
+        httpx_mock.add_response(
+            url="http://test/v1/completions",
+            json={"choices": [{"text": "Hello world"}]},
+        )
+
+        backend = _make_backend(
+            target="http://test",
+            model="default-model",
+            request_format="/v1/completions",
+        )
+        await backend.process_startup()
+
+        request = (
+            GenerationRequest(model=request_model)
+            if request_model
+            else GenerationRequest()
+        )
+        request_info = RequestInfo(
+            request_id="test-id",
+            status="pending",
+            scheduler_node_id=1,
+            scheduler_process_id=1,
+            scheduler_start_time=123.0,
+            timings=RequestTimings(),
+        )
+
+        mock_handler, handler_patch = mock_request_handler
+        formatted_model = None
+
+        def _capture_format(data, history, model, **kwargs):
+            nonlocal formatted_model
+            formatted_model = model
+            return GenerationRequestArguments(
+                body={"prompt": "test prompt", "model": model}
+            )
+
+        mock_handler.format.side_effect = _capture_format
+        mock_handler.compile_non_streaming.return_value = GenerationResponse(
+            request_id="test-id", request_args="test args"
+        )
+
+        with handler_patch:
+            async for _response, _info in backend.resolve(request, request_info):
+                pass
+
+        assert formatted_model == expected_model
+
+    @pytest.mark.asyncio
+    @async_timeout(10.0)
+    async def test_request_models_with_lora_adapters(self):
+        """request_models returns [base] + adapters when configured."""
+        backend = _make_backend(
+            target="http://test",
+            model="base-model",
+            lora_adapters=["adapter-a", "adapter-b"],
+        )
+        assert backend.request_models == ["base-model", "adapter-a", "adapter-b"]
+        assert await backend.default_model() == "base-model"
+
+    @pytest.mark.asyncio
+    @async_timeout(10.0)
+    async def test_request_models_without_adapters(self):
+        """request_models returns [model] when no adapters configured."""
+        backend = _make_backend(
+            target="http://test",
+            model="solo-model",
+        )
+        assert backend.request_models == ["solo-model"]
+        assert await backend.default_model() == "solo-model"
+
+    @pytest.mark.asyncio
     @async_timeout(10.0)
     async def test_validate_with_model(self, httpx_mock: HTTPXMock):
         """Test validate method when model is set."""

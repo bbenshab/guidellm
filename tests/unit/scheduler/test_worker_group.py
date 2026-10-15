@@ -956,3 +956,80 @@ class TestRequestsGeneratorGenerationDelay:
 
         assert len(yielded[0].request_infos) == 2
         assert len(state._state.generation_delay_samples) == 1
+
+
+class TestModelCycle:
+    """Test the main-process round-robin model assignment."""
+
+    def test_round_robin_cycles(self):
+        """Models cycle in order and wrap around."""
+        from guidellm.scheduler.worker_group import _ModelCycle
+
+        cycle = _ModelCycle(["base", "adapter-01", "adapter-02"])
+
+        class FakeRequest:
+            model = None
+
+        requests = [FakeRequest() for _ in range(7)]
+        for req in requests:
+            cycle.assign(req)
+
+        assigned = [r.model for r in requests]
+        assert assigned == [
+            "base",
+            "adapter-01",
+            "adapter-02",
+            "base",
+            "adapter-01",
+            "adapter-02",
+            "base",
+        ]
+
+    def test_empty_list_is_noop(self):
+        """An empty model list leaves request.model untouched."""
+        from guidellm.scheduler.worker_group import _ModelCycle
+
+        cycle = _ModelCycle([])
+
+        class FakeRequest:
+            model = None
+
+        req = FakeRequest()
+        cycle.assign(req)
+        assert req.model is None
+
+    def test_single_model_always_assigned(self):
+        """A single-model list assigns that model to every request."""
+        from guidellm.scheduler.worker_group import _ModelCycle
+
+        cycle = _ModelCycle(["only-model"])
+
+        class FakeRequest:
+            model = None
+
+        requests = [FakeRequest() for _ in range(3)]
+        for req in requests:
+            cycle.assign(req)
+        assert all(r.model == "only-model" for r in requests)
+
+    def test_backend_request_models_property(self):
+        """Backend.request_models returns the list; scheduler reads it publicly."""
+        from guidellm.schemas.backends.openai_http import OpenAIHTTPBackendArgs
+        from guidellm.backends.openai.http import OpenAIHTTPBackend
+
+        backend = OpenAIHTTPBackend(
+            OpenAIHTTPBackendArgs(
+                target="http://test",
+                model="base",
+                lora_adapters=["a1", "a2"],
+            )
+        )
+        assert backend.request_models == ["base", "a1", "a2"]
+
+        single = OpenAIHTTPBackend(
+            OpenAIHTTPBackendArgs(target="http://test", model="solo")
+        )
+        assert single.request_models == ["solo"]
+
+        empty = OpenAIHTTPBackend(OpenAIHTTPBackendArgs(target="http://test"))
+        assert empty.request_models == []

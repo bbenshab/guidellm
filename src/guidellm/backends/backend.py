@@ -103,6 +103,20 @@ class Backend(
         return None
 
     @property
+    def request_models(self) -> list[str]:
+        """
+        Models that requests are routed to, for round-robin distribution.
+
+        Base implementation returns the single configured model. Backends
+        serving multiple models on one endpoint (e.g. LoRA adapters)
+        override this to return the full cycle list.
+
+        :return: List of model names (empty when no model is configured)
+        """
+        model = getattr(self._args, "model", "") if self._args else ""
+        return [model] if model else []
+
+    @property
     def requests_limit(self) -> int | None:
         """
         :return: Maximum number of concurrent requests supported globally,

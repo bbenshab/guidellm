@@ -168,6 +168,10 @@ class OpenAIHTTPBackend(Backend):
         """
         Get the default model for this backend.
 
+        Used for tokenizer resolution and benchmark identity. For LoRA
+        round-robin, this is always the base model — adapters share the
+        base model's tokenizer.
+
         :return: Model name or None if no model is available
         """
         if self._args.model or not self._in_process:
@@ -176,6 +180,24 @@ class OpenAIHTTPBackend(Backend):
         models = await self.available_models()
         self._args.model = models[0] if models else ""
         return self._args.model
+
+    @property
+    def request_models(self) -> list[str]:
+        """
+        Models that requests are round-robined across.
+
+        Returns [base_model] + lora_adapters when adapters are configured,
+        or [base_model] when they are not. The scheduler cycles through
+        this list at request-generation time (main process, before worker
+        dispatch — immune to multiprocessing isolation).
+
+        :return: List of model names the backend serves
+        """
+        base = self._args.model if self._args.model else ""
+        adapters = getattr(self._args, "lora_adapters", None) or []
+        if adapters:
+            return [base] + [a.strip() for a in adapters if a.strip()]
+        return [base] if base else []
 
     async def resolve(  # type: ignore[override, misc]
         self,
@@ -250,7 +272,7 @@ class OpenAIHTTPBackend(Backend):
         arguments: GenerationRequestArguments = request_handler.format(
             data=request,
             history=history,
-            model=(await self.default_model()),
+            model=(request.model if request.model else await self.default_model()),
             stream=self._args.stream,
             extras=self._args.extras,
             max_tokens=self._args.max_tokens,

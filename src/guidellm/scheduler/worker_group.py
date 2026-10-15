@@ -365,8 +365,16 @@ class WorkerProcessGroup(Generic[RequestT, ResponseT]):
             error_event=self.error_event,
             messaging=self.messaging,
         )
+        request_models = (
+            self.backend.request_models
+            if self.backend and len(self.backend.request_models) > 1
+            else None
+        )
         await self.messaging.start(
-            send_items=self.state.requests_generator(self.requests),
+            send_items=self.state.requests_generator(
+                self.requests,
+                request_models=request_models,
+            ),
             receive_callback=self.state.received_callback,
             send_stopped_event=send_requests_stopped_event,
             send_stop_criteria=[stop_send_requests_event],
@@ -545,6 +553,24 @@ class _StateUpdate(NamedTuple):
     stop_processing: bool
 
 
+class _ModelCycle:
+    """Round-robin model assignment for multi-LoRA adapter benchmarking.
+
+    Assigned in the main scheduler process at request-generation time,
+    before worker dispatch — immune to multiprocessing isolation.
+    """
+
+    def __init__(self, models: list[str]):
+        self._models = models
+        self._index = 0
+
+    def assign(self, request) -> None:
+        if not self._models:
+            return
+        request.model = self._models[self._index]
+        self._index = (self._index + 1) % len(self._models)
+
+
 class WorkerGroupState(Generic[RequestT, ResponseT]):
     """
     Manages scheduler state and synchronization for worker process groups.
@@ -615,6 +641,7 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
     def requests_generator(
         self,
         requests: DatasetIterT[RequestT],
+        request_models: list[str] | None = None,
     ) -> Generator[ConversationT[RequestT], None, None]:
         """
         Generate request-info pairs for worker processing with constraint evaluation.
@@ -626,6 +653,8 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
         :param requests: Finite iterable of requests to process sequentially
         :return: Generator yielding conversation graphs for worker processing
         """
+
+        model_cycle = _ModelCycle(request_models or [])
 
         try:
             count = 0
@@ -650,6 +679,11 @@ class WorkerGroupState(Generic[RequestT, ResponseT]):
                     count += 1
 
                     request_id = self._find_request_id(node.request)
+
+                    # Round-robin model assignment (main process, before
+                    # the multiprocessing queue — immune to worker isolation)
+                    model_cycle.assign(node.request)
+
                     request_info: RequestInfo = RequestInfo(
                         request_id=request_id,
                         conversation_id=graph.graph_id,
